@@ -210,6 +210,37 @@ def health():
     return jsonify({"status": "ok"})
 
 
+@app.route("/start-session", methods=["GET"])
+def start_session():
+    """Inicia la sesión de WhatsApp en WAHA."""
+    r = requests.post(f"{WAHA_URL}/api/sessions",
+        json={"name": SESSION},
+        headers=HEADERS, timeout=10)
+    return jsonify({"status": r.status_code, "data": r.json() if r.content else {}})
+
+
+@app.route("/qr", methods=["GET"])
+def get_qr():
+    """Devuelve el QR para escanear con WhatsApp."""
+    r = requests.get(f"{WAHA_URL}/api/{SESSION}/auth/qr",
+        headers=HEADERS, timeout=10)
+    if r.status_code == 200 and "image" in r.headers.get("Content-Type", ""):
+        from flask import Response
+        return Response(r.content, mimetype="image/png")
+    # Si devuelve JSON con base64
+    try:
+        data = r.json()
+        b64 = data.get("value", "")
+        if b64:
+            import base64
+            from flask import Response
+            img = base64.b64decode(b64.split(",")[-1])
+            return Response(img, mimetype="image/png")
+    except Exception:
+        pass
+    return jsonify({"status": r.status_code, "data": r.text})
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     print("Bot iniciado en puerto 5000")
