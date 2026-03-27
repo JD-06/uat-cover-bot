@@ -39,6 +39,7 @@ FIELD_PROMPTS = {
 }
 
 sessions: dict[str, dict] = {}
+qr_cache: dict = {}   # guarda el último QR recibido por webhook
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -198,6 +199,15 @@ def webhook():
     data = request.json or {}
     event = data.get("event", "")
 
+    # Guardar QR cuando llega por webhook
+    if event == "qrcode.updated":
+        payload = data.get("data", {})
+        b64 = payload.get("qrcode", {}).get("base64") or payload.get("base64", "")
+        if b64:
+            qr_cache["base64"] = b64
+            print(f"[QR] QR recibido y guardado en cache")
+        return jsonify({"ok": True})
+
     if event != "messages.upsert":
         return jsonify({"ok": True})
 
@@ -258,8 +268,8 @@ def start_session():
                 "enabled": True,
                 "url": webhook_url,
                 "by_events": True,
-                "base64": False,
-                "events": ["MESSAGES_UPSERT"],
+                "base64": True,
+                "events": ["MESSAGES_UPSERT", "QRCODE_UPDATED", "CONNECTION_UPDATE"],
             }
         },
         headers=HEADERS, timeout=15,
@@ -296,26 +306,27 @@ def debug():
 @app.route("/qr")
 def get_qr():
     """Devuelve el QR para vincular WhatsApp."""
-    # Reiniciar para forzar generación del QR
+    # Si ya hay QR en cache, servir de inmediato
+    if qr_cache.get("base64"):
+        b64 = qr_cache["base64"]
+        img = base64.b64decode(b64.split(",")[-1])
+        return Response(img, mimetype="image/png")
+
+    # Reiniciar instancia para forzar generación del QR
     requests.put(
         f"{EVOLUTION_URL}/instance/restart/{INSTANCE}",
         headers=HEADERS, timeout=15,
     )
 
-    # Esperar hasta que aparezca el QR (máx 30 segundos)
+    # Esperar hasta que llegue el QR por webhook (máx 30 segundos)
     for _ in range(15):
         time.sleep(2)
-        r = requests.get(
-            f"{EVOLUTION_URL}/instance/connect/{INSTANCE}",
-            headers=HEADERS, timeout=15,
-        )
-        data = r.json() if r.content else {}
-        b64 = data.get("base64") or data.get("qrcode", {}).get("base64")
-        if b64 and b64.startswith("data:image"):
+        if qr_cache.get("base64"):
+            b64 = qr_cache["base64"]
             img = base64.b64decode(b64.split(",")[-1])
             return Response(img, mimetype="image/png")
 
-    return jsonify({"error": "QR no disponible aun, recarga la pagina", "raw": data})
+    return jsonify({"error": "QR no llego aun, recarga la pagina en 5 segundos"})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
