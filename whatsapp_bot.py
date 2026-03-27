@@ -276,13 +276,20 @@ def start_session():
 @app.route("/qr")
 def get_qr():
     """Devuelve el QR para vincular WhatsApp."""
+    # Ver instancias disponibles
+    instances = requests.get(
+        f"{EVOLUTION_URL}/instance/fetchInstances",
+        headers=HEADERS, timeout=15,
+    ).json()
+
+    # Intentar conectar y obtener QR
     r = requests.get(
         f"{EVOLUTION_URL}/instance/connect/{INSTANCE}",
         headers=HEADERS, timeout=15,
     )
     data = r.json() if r.content else {}
 
-    # Intentar extraer base64 del QR
+    # Buscar base64 en diferentes ubicaciones según versión
     b64 = (data.get("base64")
            or data.get("qrcode", {}).get("base64")
            or data.get("code", ""))
@@ -291,8 +298,11 @@ def get_qr():
         img = base64.b64decode(b64.split(",")[-1])
         return Response(img, mimetype="image/png")
 
-    # Devolver raw para debug
-    return jsonify({"status": r.status_code, "raw": data})
+    return jsonify({
+        "instances": instances,
+        "connect_status": r.status_code,
+        "connect_raw": data,
+    })
 
 
 # ─────────────────────────────────────────────────────────────────────────────
