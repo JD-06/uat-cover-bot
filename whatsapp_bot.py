@@ -241,7 +241,7 @@ def health():
 @app.route("/start-session")
 def start_session():
     """Crea la instancia de WhatsApp y configura el webhook."""
-    # 1. Crear instancia
+    # 1. Crear instancia (ignorar si ya existe)
     r = requests.post(
         f"{EVOLUTION_URL}/instance/create",
         json={"instanceName": INSTANCE, "integration": "WHATSAPP-BAILEYS"},
@@ -249,12 +249,13 @@ def start_session():
     )
     create_data = r.json() if r.content else {}
 
-    # 2. Configurar webhook por separado
+    # 2. Configurar webhook
     webhook_url = f"{BOT_URL}/webhook"
     r2 = requests.post(
         f"{EVOLUTION_URL}/webhook/set/{INSTANCE}",
         json={
             "webhook": {
+                "enabled": True,
                 "url": webhook_url,
                 "by_events": True,
                 "base64": False,
