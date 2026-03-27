@@ -205,32 +205,38 @@ def main():
     print("Escanea el QR en el panel de Green API con WhatsApp.")
     print("Esperando mensajes... (Ctrl+C para detener)\n")
 
+    import time
     while True:
         try:
             response = api.receiving.receiveNotification()
-            if response and response.get("body"):
-                notification = response["body"]
-                msg_type = notification.get("messageData", {}).get("typeMessage", "")
 
-                if msg_type in ("textMessage", "extendedTextMessage",
-                                "documentMessage", "imageMessage"):
-                    # Envolvemos en el formato que espera handle_message
-                    handle_message(api, {"body": {
-                        "senderData": notification.get("senderData", {}),
-                        "messageData": notification.get("messageData", {}),
-                    }})
+            # response.data es None si no hay mensajes, o un dict con la notificación
+            if not response or not response.data:
+                time.sleep(1)
+                continue
 
-                # Eliminar la notificación de la cola
-                receipt_id = response.get("receiptId")
-                if receipt_id:
-                    api.receiving.deleteNotification(receipt_id)
+            data = response.data
+            receipt_id = data.get("receiptId")
+            notification = data.get("body", {})
+            msg_type = notification.get("messageData", {}).get("typeMessage", "")
+
+            print(f"[MSG] tipo={msg_type}")
+
+            if msg_type in ("textMessage", "extendedTextMessage",
+                            "documentMessage", "imageMessage"):
+                handle_message(api, {"body": {
+                    "senderData": notification.get("senderData", {}),
+                    "messageData": notification.get("messageData", {}),
+                }})
+
+            if receipt_id:
+                api.receiving.deleteNotification(receipt_id)
 
         except KeyboardInterrupt:
             print("\nBot detenido.")
             break
         except Exception as e:
             print(f"[Error] {e}")
-            import time
             time.sleep(3)
 
 
