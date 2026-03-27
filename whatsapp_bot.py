@@ -290,6 +290,7 @@ def wait_for_evolution():
 
 
 if __name__ == "__main__":
-    wait_for_evolution()
+    import threading
+    threading.Thread(target=wait_for_evolution, daemon=True).start()
     print("Bot iniciado en puerto 5000")
     app.run(host="0.0.0.0", port=5000)
