@@ -22,13 +22,15 @@ services:
       - waha
     networks:
       - dokploy-network
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.wppbot.rule=PathPrefix(`/wppbot`)"
-      - "traefik.http.routers.wppbot.entrypoints=web"
-      - "traefik.http.services.wppbot.loadbalancer.server.port=5000"
-      - "traefik.http.middlewares.wppbot-strip.stripprefix.prefixes=/wppbot"
-      - "traefik.http.routers.wppbot.middlewares=wppbot-strip"
+    deploy:
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.wppbot.rule=PathPrefix(`/wppbot`)"
+        - "traefik.http.routers.wppbot.entrypoints=web"
+        - "traefik.http.services.wppbot.loadbalancer.server.port=5000"
+        - "traefik.http.middlewares.wppbot-strip.stripprefix.prefixes=/wppbot"
+        - "traefik.http.routers.wppbot.middlewares=wppbot-strip"
+        - "traefik.docker.network=dokploy-network"
 
 networks:
   dokploy-network:
