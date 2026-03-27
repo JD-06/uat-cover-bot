@@ -204,7 +204,7 @@ def show_webhook_log():
 def webhook():
     data = request.json or {}
     event = data.get("event", "")
-    webhook_log.append({"event": event, "keys": list(data.keys())})
+    webhook_log.append({"event": event, "data": data.get("data", {})})
 
     # Guardar QR cuando llega por webhook
     if event == "qrcode.updated":
