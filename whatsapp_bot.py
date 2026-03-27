@@ -1,40 +1,30 @@
 """
 whatsapp_bot.py
-Bot de WhatsApp usando Green API (https://green-api.com) — plan gratuito disponible.
+Bot de WhatsApp usando WAHA (self-hosted) + Flask webhook.
 
-FLUJO:
-  1. Usuario escribe /portada
-  2. Bot pregunta los datos uno por uno
-  3. Usuario sube su PDF
-  4. Bot genera la portada, la pega al frente y envía el PDF final
-
-CONFIGURACIÓN:
-  Crea un archivo .env (o edita las constantes de abajo) con:
-    INSTANCE_ID   → ID de instancia de Green API
-    API_TOKEN     → Token de la instancia
+Flujo:
+  1. WAHA recibe mensajes de WhatsApp y los manda a /webhook
+  2. El bot procesa el mensaje y responde via la API de WAHA
 """
 
 import os
 import tempfile
-import urllib.request
+import requests
+from flask import Flask, request, jsonify
 from dotenv import load_dotenv
-from whatsapp_api_client_python import API
 
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CONFIGURACIÓN  (también puedes poner estas variables en un .env)
-# ─────────────────────────────────────────────────────────────────────────────
-INSTANCE_ID = os.getenv("INSTANCE_ID", "TU_INSTANCE_ID_AQUI")
-API_TOKEN   = os.getenv("API_TOKEN",   "TU_API_TOKEN_AQUI")
+WAHA_URL = os.getenv("WAHA_URL", "http://waha:3000")
+SESSION  = "default"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+TEMP_DIR = tempfile.gettempdir()
 
-BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
-TEMP_DIR    = tempfile.gettempdir()
+app = Flask(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Estado de conversación por chat
 # ─────────────────────────────────────────────────────────────────────────────
-# Campos que pedimos en orden
 FIELDS = ["alumno", "maestro", "materia", "tema", "grado_grupo", "fecha"]
 
 FIELD_PROMPTS = {
@@ -46,110 +36,108 @@ FIELD_PROMPTS = {
     "fecha":       "*Fecha* (ej. 25/03/2026):",
 }
 
-# chat_id → {"step": str, "data": dict}
 sessions: dict[str, dict] = {}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Helpers
+# Helpers WAHA
 # ─────────────────────────────────────────────────────────────────────────────
-def send_text(api: API, chat_id: str, text: str):
-    api.sending.sendMessage(chat_id, text)
+def send_text(chat_id: str, text: str):
+    requests.post(f"{WAHA_URL}/api/sendText", json={
+        "chatId":  chat_id,
+        "text":    text,
+        "session": SESSION,
+    }, timeout=10)
 
 
-def send_file(api: API, chat_id: str, file_path: str, caption: str = ""):
-    api.sending.sendFileByUpload(chat_id, file_path, os.path.basename(file_path), caption)
+def send_file(chat_id: str, file_path: str, caption: str = ""):
+    with open(file_path, "rb") as f:
+        requests.post(f"{WAHA_URL}/api/sendFile",
+            data={"chatId": chat_id, "session": SESSION, "caption": caption},
+            files={"file": (os.path.basename(file_path), f, "application/pdf")},
+            timeout=30,
+        )
 
 
-def download_file(url: str, dest: str):
-    urllib.request.urlretrieve(url, dest)
+def download_media(message_id: str) -> bytes | None:
+    """Descarga el archivo de un mensaje con media desde WAHA."""
+    r = requests.post(
+        f"{WAHA_URL}/api/{SESSION}/messages/{message_id}/download-media",
+        timeout=30,
+    )
+    if r.status_code == 200:
+        return r.content
+    return None
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Lógica de conversación
+# ─────────────────────────────────────────────────────────────────────────────
 def next_field(step: str) -> str | None:
-    """Devuelve el siguiente campo después de `step`, o None si ya terminaron."""
     try:
         idx = FIELDS.index(step)
         return FIELDS[idx + 1] if idx + 1 < len(FIELDS) else None
     except ValueError:
-        return FIELDS[0] if FIELDS else None
+        return FIELDS[0]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Lógica principal de mensajes
-# ─────────────────────────────────────────────────────────────────────────────
-def handle_message(api: API, notification: dict):
-    """Procesa cada mensaje entrante."""
+def handle(chat_id: str, text: str, has_media: bool,
+           mime_type: str, message_id: str):
     from cover_generator import generate_cover, prepend_cover_to_pdf
 
-    body     = notification.get("body", {})
-    msg_data = body.get("messageData", {})
-    chat_id  = body.get("senderData", {}).get("chatId", "")
-
-    if not chat_id:
-        return
-
-    # ── Texto plano ───────────────────────────────────────────────────────
-    text_msg = msg_data.get("textMessageData", {}).get("textMessage", "").strip()
-
-    # ── Documento / PDF ───────────────────────────────────────────────────
-    file_msg  = msg_data.get("fileMessageData", {})
-    file_url  = file_msg.get("downloadUrl", "")
-    mime_type = file_msg.get("mimeType", "")
-
     session = sessions.get(chat_id, {})
+    text = text.strip()
 
-    # ── Comando /portada ──────────────────────────────────────────────────
-    if text_msg.lower() in ("/portada", "portada", "/start"):
-        sessions[chat_id] = {"step": None, "data": {}}
-        send_text(api, chat_id,
-                  "¡Hola! Voy a ayudarte a crear tu *hoja de presentación* 📄\n\n"
-                  + FIELD_PROMPTS[FIELDS[0]])
-        sessions[chat_id]["step"] = FIELDS[0]
+    # ── /portada ─────────────────────────────────────────────────────────
+    if text.lower() in ("/portada", "portada", "/start"):
+        sessions[chat_id] = {"step": FIELDS[0], "data": {}}
+        send_text(chat_id,
+            "Hola! Voy a ayudarte a crear tu hoja de presentacion.\n\n"
+            + FIELD_PROMPTS[FIELDS[0]])
         return
 
-    # ── Sin sesión activa ─────────────────────────────────────────────────
+    # ── Sin sesión ────────────────────────────────────────────────────────
     if not session:
-        send_text(api, chat_id,
-                  "Escribe */portada* para crear una hoja de presentación.")
+        send_text(chat_id, "Escribe /portada para crear una hoja de presentacion.")
         return
 
     step = session.get("step")
 
     # ── Recibiendo campos de texto ────────────────────────────────────────
-    if step in FIELDS and text_msg:
-        session["data"][step] = text_msg
+    if step in FIELDS and text:
+        session["data"][step] = text
         nxt = next_field(step)
-
         if nxt:
             session["step"] = nxt
-            send_text(api, chat_id, FIELD_PROMPTS[nxt])
+            send_text(chat_id, FIELD_PROMPTS[nxt])
         else:
-            # Todos los campos completos → pedir PDF
             session["step"] = "waiting_pdf"
             summary = "\n".join(
-                f"• *{k.replace('_', ' ').title()}*: {v}"
+                f"- {k.replace('_',' ').title()}: {v}"
                 for k, v in session["data"].items()
             )
-            send_text(api, chat_id,
-                      f"✅ Datos registrados:\n\n{summary}\n\n"
-                      "Ahora *sube tu documento PDF* y le agregaré la portada al inicio.")
+            send_text(chat_id,
+                f"Datos registrados:\n\n{summary}\n\n"
+                "Ahora sube tu documento PDF y le agrego la portada al inicio.")
         return
 
-    # ── Recibiendo el PDF ─────────────────────────────────────────────────
-    if step == "waiting_pdf" and file_url and "pdf" in mime_type.lower():
-        send_text(api, chat_id, "⏳ Recibido, generando tu portada...")
+    # ── Recibiendo PDF ────────────────────────────────────────────────────
+    if step == "waiting_pdf" and has_media and "pdf" in mime_type.lower():
+        send_text(chat_id, "Recibido, generando tu portada...")
 
-        data = session["data"]
+        media = download_media(message_id)
+        if not media:
+            send_text(chat_id, "No pude descargar el archivo. Intentalo de nuevo.")
+            return
 
-        # Rutas temporales
-        cover_path    = os.path.join(TEMP_DIR, f"cover_{chat_id}.pdf")
-        original_path = os.path.join(TEMP_DIR, f"original_{chat_id}.pdf")
-        final_path    = os.path.join(TEMP_DIR, f"final_{chat_id}.pdf")
+        data         = session["data"]
+        cover_path   = os.path.join(TEMP_DIR, f"cover_{chat_id}.pdf")
+        orig_path    = os.path.join(TEMP_DIR, f"orig_{chat_id}.pdf")
+        final_path   = os.path.join(TEMP_DIR, f"final_{chat_id}.pdf")
 
-        # Descargar el PDF del usuario
-        download_file(file_url, original_path)
+        with open(orig_path, "wb") as f:
+            f.write(media)
 
-        # Generar portada
         generate_cover(
             alumno=data.get("alumno", ""),
             maestro=data.get("maestro", ""),
@@ -160,85 +148,64 @@ def handle_message(api: API, notification: dict):
             output_path=cover_path,
         )
 
-        # Unir portada + documento
-        prepend_cover_to_pdf(cover_path, original_path, final_path)
+        prepend_cover_to_pdf(cover_path, orig_path, final_path)
 
-        # Enviar resultado
-        send_file(api, chat_id, final_path,
-                  f"📎 Aquí está tu documento con la hoja de presentación, {data.get('alumno', '')} 🎓")
+        send_file(chat_id, final_path,
+            f"Aqui esta tu documento con la portada, {data.get('alumno','')}")
 
-        # Limpiar sesión y archivos temporales
         del sessions[chat_id]
-        for p in [cover_path, original_path, final_path]:
-            try:
-                os.remove(p)
-            except OSError:
-                pass
+        for p in [cover_path, orig_path, final_path]:
+            try: os.remove(p)
+            except OSError: pass
         return
 
-    # ── PDF inesperado o tipo incorrecto ──────────────────────────────────
-    if step == "waiting_pdf" and file_url and "pdf" not in mime_type.lower():
-        send_text(api, chat_id,
-                  "⚠️ Ese archivo no es un PDF. Por favor sube un archivo con extensión *.pdf*.")
+    if step == "waiting_pdf" and has_media and "pdf" not in mime_type.lower():
+        send_text(chat_id, "Ese archivo no es un PDF. Por favor sube un archivo .pdf")
         return
 
-    # ── Mensaje inesperado ────────────────────────────────────────────────
     if step in FIELDS:
-        send_text(api, chat_id, f"Por favor escribe el valor para: {FIELD_PROMPTS[step]}")
+        send_text(chat_id, FIELD_PROMPTS[step])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Bucle principal (polling)
+# Webhook
 # ─────────────────────────────────────────────────────────────────────────────
-def main():
-    print("=" * 60)
-    print("  Bot de Hojas de Presentación — UAT")
-    print("=" * 60)
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    data = request.json or {}
 
-    if INSTANCE_ID == "TU_INSTANCE_ID_AQUI":
-        print("\nDEBES configurar INSTANCE_ID y API_TOKEN en el archivo .env")
-        print("Obtén los tuyos gratis en https://green-api.com\n")
-        return
+    if data.get("event") != "message":
+        return jsonify({"ok": True})
 
-    api = API.GreenAPI(INSTANCE_ID, API_TOKEN)
-    print(f"OK - Conectado a instancia {INSTANCE_ID}")
-    print("Escanea el QR en el panel de Green API con WhatsApp.")
-    print("Esperando mensajes... (Ctrl+C para detener)\n")
+    payload = data.get("payload", {})
 
-    import time
-    while True:
-        try:
-            response = api.receiving.receiveNotification()
+    if payload.get("fromMe"):
+        return jsonify({"ok": True})
 
-            # response.data es None si no hay mensajes, o un dict con la notificación
-            if not response or not response.data:
-                time.sleep(1)
-                continue
+    chat_id    = payload.get("from", "")
+    text       = payload.get("body", "") or ""
+    has_media  = payload.get("hasMedia", False)
+    mime_type  = (payload.get("mimetype")
+                  or payload.get("_data", {}).get("mimetype", ""))
+    message_id = payload.get("id", "")
 
-            data = response.data
-            receipt_id = data.get("receiptId")
-            notification = data.get("body", {})
-            msg_type = notification.get("messageData", {}).get("typeMessage", "")
+    if not chat_id:
+        return jsonify({"ok": True})
 
-            print(f"[MSG] tipo={msg_type}")
+    try:
+        handle(chat_id, text, has_media, mime_type, message_id)
+    except Exception as e:
+        print(f"[Error] {e}")
 
-            if msg_type in ("textMessage", "extendedTextMessage",
-                            "documentMessage", "imageMessage"):
-                handle_message(api, {"body": {
-                    "senderData": notification.get("senderData", {}),
-                    "messageData": notification.get("messageData", {}),
-                }})
-
-            if receipt_id:
-                api.receiving.deleteNotification(receipt_id)
-
-        except KeyboardInterrupt:
-            print("\nBot detenido.")
-            break
-        except Exception as e:
-            print(f"[Error] {e}")
-            time.sleep(3)
+    return jsonify({"ok": True})
 
 
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"status": "ok"})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    main()
+    print("Bot iniciado en puerto 5000")
+    app.run(host="0.0.0.0", port=5000)

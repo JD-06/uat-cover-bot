@@ -1,5 +1,6 @@
 reportlab
 PyPDF2
 pillow
-whatsapp-api-client-python
 python-dotenv
+flask
+requests
