@@ -280,16 +280,19 @@ def get_qr():
         f"{EVOLUTION_URL}/instance/connect/{INSTANCE}",
         headers=HEADERS, timeout=15,
     )
-    if r.status_code != 200:
-        return jsonify({"error": r.text}), r.status_code
+    data = r.json() if r.content else {}
 
-    data = r.json()
-    b64 = data.get("base64", "")
-    if b64:
+    # Intentar extraer base64 del QR
+    b64 = (data.get("base64")
+           or data.get("qrcode", {}).get("base64")
+           or data.get("code", ""))
+
+    if b64 and b64.startswith("data:image"):
         img = base64.b64decode(b64.split(",")[-1])
         return Response(img, mimetype="image/png")
 
-    return jsonify(data)
+    # Devolver raw para debug
+    return jsonify({"status": r.status_code, "raw": data})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
