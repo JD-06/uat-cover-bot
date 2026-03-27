@@ -196,14 +196,14 @@ def main():
     print("=" * 60)
 
     if INSTANCE_ID == "TU_INSTANCE_ID_AQUI":
-        print("\n⚠️  DEBES configurar INSTANCE_ID y API_TOKEN.")
-        print("   Obtén los tuyos gratis en https://green-api.com\n")
+        print("\nDEBES configurar INSTANCE_ID y API_TOKEN en el archivo .env")
+        print("Obtén los tuyos gratis en https://green-api.com\n")
         return
 
     api = API.GreenAPI(INSTANCE_ID, API_TOKEN)
-    print(f"✅ Conectado a instancia {INSTANCE_ID}")
-    print("   Escanea el QR en el panel de Green API con WhatsApp.")
-    print("   Esperando mensajes... (Ctrl+C para detener)\n")
+    print(f"OK - Conectado a instancia {INSTANCE_ID}")
+    print("Escanea el QR en el panel de Green API con WhatsApp.")
+    print("Esperando mensajes... (Ctrl+C para detener)\n")
 
     while True:
         try:
@@ -226,7 +226,7 @@ def main():
                     api.receiving.deleteNotification(receipt_id)
 
         except KeyboardInterrupt:
-            print("\n👋 Bot detenido.")
+            print("\nBot detenido.")
             break
         except Exception as e:
             print(f"[Error] {e}")
