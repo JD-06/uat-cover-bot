@@ -326,10 +326,24 @@ def reset_instance():
     )
 
     qr_cache.clear()
+
+    # Iniciar conexion para que Evolution genere el QR
+    time.sleep(1)
+    r4 = requests.get(
+        f"{EVOLUTION_URL}/instance/connect/{INSTANCE}",
+        headers=HEADERS, timeout=15,
+    )
+    connect_data = r4.json() if r4.content else {}
+    # Si devolvio QR directamente, guardarlo en cache
+    b64 = connect_data.get("base64", "")
+    if b64:
+        qr_cache["base64"] = b64
+
     return jsonify({
         "delete": r1.status_code,
         "create": r2.json(),
         "webhook": r3.status_code,
+        "connect": connect_data,
     })
 
 
@@ -362,6 +376,22 @@ def get_qr():
         img = base64.b64decode(b64.split(",")[-1])
         return Response(img, mimetype="image/png")
 
+    # Intentar obtener QR directamente del endpoint de connect
+    try:
+        r = requests.get(
+            f"{EVOLUTION_URL}/instance/connect/{INSTANCE}",
+            headers=HEADERS, timeout=10,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            b64 = data.get("base64", "")
+            if b64:
+                qr_cache["base64"] = b64
+                img = base64.b64decode(b64.split(",")[-1])
+                return Response(img, mimetype="image/png")
+    except Exception as e:
+        print(f"[QR] connect error: {e}")
+
     # Esperar hasta que llegue el QR por webhook (máx 40 segundos)
     for _ in range(20):
         time.sleep(2)
@@ -369,8 +399,21 @@ def get_qr():
             b64 = qr_cache["base64"]
             img = base64.b64decode(b64.split(",")[-1])
             return Response(img, mimetype="image/png")
+        # Reintentar connect cada 4 segundos
+        if _ % 2 == 1:
+            try:
+                r = requests.get(
+                    f"{EVOLUTION_URL}/instance/connect/{INSTANCE}",
+                    headers=HEADERS, timeout=10,
+                )
+                if r.status_code == 200:
+                    b64 = r.json().get("base64", "")
+                    if b64:
+                        qr_cache["base64"] = b64
+            except Exception:
+                pass
 
-    return jsonify({"error": "QR no llego, abre /start-session y luego recarga esta pagina"})
+    return jsonify({"error": "QR no disponible. Llama /reset y espera 5s antes de recargar esta pagina"})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
