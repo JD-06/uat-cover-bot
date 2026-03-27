@@ -39,7 +39,8 @@ FIELD_PROMPTS = {
 }
 
 sessions: dict[str, dict] = {}
-qr_cache: dict = {}   # guarda el último QR recibido por webhook
+qr_cache: dict = {}
+webhook_log: list = []   # últimos eventos recibidos
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -194,10 +195,16 @@ def handle(chat_id: str, text: str, msg_type: str, raw_message: dict):
 # ─────────────────────────────────────────────────────────────────────────────
 # Webhook
 # ─────────────────────────────────────────────────────────────────────────────
+@app.route("/webhook-log")
+def show_webhook_log():
+    return jsonify(webhook_log[-20:])
+
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json or {}
     event = data.get("event", "")
+    webhook_log.append({"event": event, "keys": list(data.keys())})
 
     # Guardar QR cuando llega por webhook
     if event == "qrcode.updated":
