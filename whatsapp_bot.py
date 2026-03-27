@@ -273,6 +273,26 @@ def start_session():
     })
 
 
+@app.route("/debug")
+def debug():
+    """Prueba varios endpoints de Evolution API para encontrar el correcto."""
+    results = {}
+    endpoints = [
+        ("GET", f"/instance/connect/{INSTANCE}"),
+        ("GET", f"/instance/qrcode/{INSTANCE}"),
+        ("GET", f"/instance/fetchInstances"),
+        ("GET", f"/instance/connectionState/{INSTANCE}"),
+    ]
+    for method, path in endpoints:
+        try:
+            r = requests.request(method, f"{EVOLUTION_URL}{path}",
+                                 headers=HEADERS, timeout=10)
+            results[path] = {"status": r.status_code, "data": r.json()}
+        except Exception as e:
+            results[path] = {"error": str(e)}
+    return jsonify(results)
+
+
 @app.route("/qr")
 def get_qr():
     """Devuelve el QR para vincular WhatsApp."""
