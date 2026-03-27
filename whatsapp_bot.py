@@ -254,10 +254,12 @@ def start_session():
     r2 = requests.post(
         f"{EVOLUTION_URL}/webhook/set/{INSTANCE}",
         json={
-            "url": webhook_url,
-            "webhook_by_events": True,
-            "webhook_base64": False,
-            "events": ["MESSAGES_UPSERT"],
+            "webhook": {
+                "url": webhook_url,
+                "by_events": True,
+                "base64": False,
+                "events": ["MESSAGES_UPSERT"],
+            }
         },
         headers=HEADERS, timeout=15,
     )
