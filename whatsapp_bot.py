@@ -293,6 +293,46 @@ def start_session():
     })
 
 
+@app.route("/reset")
+def reset_instance():
+    """Borra la instancia y la crea de nuevo limpia."""
+    # Borrar instancia
+    r1 = requests.delete(
+        f"{EVOLUTION_URL}/instance/delete/{INSTANCE}",
+        headers=HEADERS, timeout=15,
+    )
+    time.sleep(2)
+
+    # Crear de nuevo
+    r2 = requests.post(
+        f"{EVOLUTION_URL}/instance/create",
+        json={"instanceName": INSTANCE, "integration": "WHATSAPP-BAILEYS"},
+        headers=HEADERS, timeout=15,
+    )
+    time.sleep(1)
+
+    # Configurar webhook
+    webhook_url = f"{BOT_URL}/webhook"
+    r3 = requests.post(
+        f"{EVOLUTION_URL}/webhook/set/{INSTANCE}",
+        json={"webhook": {
+            "enabled": True,
+            "url": webhook_url,
+            "by_events": True,
+            "base64": True,
+            "events": ["MESSAGES_UPSERT", "QRCODE_UPDATED", "CONNECTION_UPDATE"],
+        }},
+        headers=HEADERS, timeout=15,
+    )
+
+    qr_cache.clear()
+    return jsonify({
+        "delete": r1.status_code,
+        "create": r2.json(),
+        "webhook": r3.status_code,
+    })
+
+
 @app.route("/debug")
 def debug():
     """Prueba varios endpoints de Evolution API para encontrar el correcto."""
