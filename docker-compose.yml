@@ -1,14 +1,16 @@
 services:
 
-  waha:
-    image: devlikeapro/waha
+  evolution:
+    image: atendai/evolution-api:latest
     restart: unless-stopped
     environment:
-      - WHATSAPP_HOOK_URL=http://bot:5000/webhook
-      - WHATSAPP_HOOK_EVENTS=message
-      - WHATSAPP_API_KEY=${WAHA_API_KEY}
+      - SERVER_URL=http://evolution:8080
+      - AUTHENTICATION_API_KEY=${EVOLUTION_API_KEY}
+      - DATABASE_ENABLED=false
+      - CACHE_REDIS_ENABLED=false
+      - CACHE_LOCAL_ENABLED=true
     volumes:
-      - waha_sessions:/app/.sessions
+      - evolution_data:/evolution/instances
     networks:
       - dokploy-network
 
@@ -16,25 +18,17 @@ services:
     build: .
     restart: unless-stopped
     environment:
-      - WAHA_URL=http://waha:3000
-      - WAHA_API_KEY=${WAHA_API_KEY}
+      - EVOLUTION_URL=http://evolution:8080
+      - EVOLUTION_API_KEY=${EVOLUTION_API_KEY}
+      - BOT_URL=${BOT_URL}
     depends_on:
-      - waha
+      - evolution
     networks:
       - dokploy-network
-    deploy:
-      labels:
-        - "traefik.enable=true"
-        - "traefik.http.routers.wppbot.rule=PathPrefix(`/wppbot`)"
-        - "traefik.http.routers.wppbot.entrypoints=web"
-        - "traefik.http.services.wppbot.loadbalancer.server.port=5000"
-        - "traefik.http.middlewares.wppbot-strip.stripprefix.prefixes=/wppbot"
-        - "traefik.http.routers.wppbot.middlewares=wppbot-strip"
-        - "traefik.docker.network=dokploy-network"
 
 networks:
   dokploy-network:
     external: true
 
 volumes:
-  waha_sessions:
+  evolution_data:

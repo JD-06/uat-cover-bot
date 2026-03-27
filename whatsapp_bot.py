@@ -1,27 +1,26 @@
 """
 whatsapp_bot.py
-Bot de WhatsApp usando WAHA (self-hosted) + Flask webhook.
-
-Flujo:
-  1. WAHA recibe mensajes de WhatsApp y los manda a /webhook
-  2. El bot procesa el mensaje y responde via la API de WAHA
+Bot de WhatsApp usando Evolution API (ARM64 compatible) + Flask webhook.
 """
 
 import os
+import time
+import base64
 import tempfile
 import requests
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
-WAHA_URL = os.getenv("WAHA_URL", "http://waha:3000")
-WAHA_KEY = os.getenv("WAHA_API_KEY", "")
-SESSION  = "default"
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-TEMP_DIR = tempfile.gettempdir()
+EVOLUTION_URL = os.getenv("EVOLUTION_URL", "http://evolution:8080")
+API_KEY       = os.getenv("EVOLUTION_API_KEY", "")
+INSTANCE      = "default"
+BOT_URL       = os.getenv("BOT_URL", "http://bot:5000")
+BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
+TEMP_DIR      = tempfile.gettempdir()
 
-HEADERS = {"X-Api-Key": WAHA_KEY} if WAHA_KEY else {}
+HEADERS = {"apikey": API_KEY, "Content-Type": "application/json"}
 
 app = Flask(__name__)
 
@@ -31,47 +30,61 @@ app = Flask(__name__)
 FIELDS = ["alumno", "maestro", "materia", "tema", "grado_grupo", "fecha"]
 
 FIELD_PROMPTS = {
-    "alumno":      "Nombre del *alumno*:",
-    "maestro":     "Nombre del *maestro*:",
-    "materia":     "Nombre de la *materia*:",
-    "tema":        "Nombre del *tema* o título del trabajo:",
-    "grado_grupo": "*Grado y grupo* (ej. 3.- M):",
-    "fecha":       "*Fecha* (ej. 25/03/2026):",
+    "alumno":      "Nombre del alumno:",
+    "maestro":     "Nombre del maestro:",
+    "materia":     "Nombre de la materia:",
+    "tema":        "Tema o titulo del trabajo:",
+    "grado_grupo": "Grado y grupo (ej. 3.- M):",
+    "fecha":       "Fecha (ej. 25/03/2026):",
 }
 
 sessions: dict[str, dict] = {}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Helpers WAHA
+# Helpers Evolution API
 # ─────────────────────────────────────────────────────────────────────────────
+def _number(chat_id: str) -> str:
+    """Convierte '521234567890@s.whatsapp.net' → '521234567890'"""
+    return chat_id.split("@")[0]
+
+
 def send_text(chat_id: str, text: str):
-    requests.post(f"{WAHA_URL}/api/sendText", json={
-        "chatId":  chat_id,
-        "text":    text,
-        "session": SESSION,
-    }, headers=HEADERS, timeout=10)
+    requests.post(
+        f"{EVOLUTION_URL}/message/sendText/{INSTANCE}",
+        json={"number": _number(chat_id), "text": text},
+        headers=HEADERS, timeout=15,
+    )
 
 
 def send_file(chat_id: str, file_path: str, caption: str = ""):
     with open(file_path, "rb") as f:
-        requests.post(f"{WAHA_URL}/api/sendFile",
-            data={"chatId": chat_id, "session": SESSION, "caption": caption},
-            files={"file": (os.path.basename(file_path), f, "application/pdf")},
-            headers=HEADERS,
-            timeout=30,
-        )
+        b64 = base64.b64encode(f.read()).decode()
+    requests.post(
+        f"{EVOLUTION_URL}/message/sendMedia/{INSTANCE}",
+        json={
+            "number":    _number(chat_id),
+            "mediatype": "document",
+            "mimetype":  "application/pdf",
+            "fileName":  os.path.basename(file_path),
+            "caption":   caption,
+            "media":     b64,
+        },
+        headers=HEADERS, timeout=30,
+    )
 
 
-def download_media(message_id: str) -> bytes | None:
-    """Descarga el archivo de un mensaje con media desde WAHA."""
+def download_media(message: dict) -> bytes | None:
+    """Descarga el archivo adjunto de un mensaje."""
     r = requests.post(
-        f"{WAHA_URL}/api/{SESSION}/messages/{message_id}/download-media",
-        headers=HEADERS,
-        timeout=30,
+        f"{EVOLUTION_URL}/chat/getBase64FromMediaMessage/{INSTANCE}",
+        json={"message": message, "convertToMp4": False},
+        headers=HEADERS, timeout=30,
     )
     if r.status_code == 200:
-        return r.content
+        b64 = r.json().get("base64", "")
+        if b64:
+            return base64.b64decode(b64.split(",")[-1])
     return None
 
 
@@ -86,14 +99,20 @@ def next_field(step: str) -> str | None:
         return FIELDS[0]
 
 
-def handle(chat_id: str, text: str, has_media: bool,
-           mime_type: str, message_id: str):
+def handle(chat_id: str, text: str, msg_type: str, raw_message: dict):
     from cover_generator import generate_cover, prepend_cover_to_pdf
 
     session = sessions.get(chat_id, {})
     text = text.strip()
 
-    # ── /portada ─────────────────────────────────────────────────────────
+    has_media = msg_type in ("documentMessage", "audioMessage",
+                             "imageMessage", "videoMessage")
+    mime_type = ""
+    if has_media:
+        inner = raw_message.get("message", {}).get(msg_type, {})
+        mime_type = inner.get("mimetype", "")
+
+    # ── /portada ──────────────────────────────────────────────────────────
     if text.lower() in ("/portada", "portada", "/start"):
         sessions[chat_id] = {"step": FIELDS[0], "data": {}}
         send_text(chat_id,
@@ -101,7 +120,7 @@ def handle(chat_id: str, text: str, has_media: bool,
             + FIELD_PROMPTS[FIELDS[0]])
         return
 
-    # ── Sin sesión ────────────────────────────────────────────────────────
+    # ── Sin sesion ────────────────────────────────────────────────────────
     if not session:
         send_text(chat_id, "Escribe /portada para crear una hoja de presentacion.")
         return
@@ -123,22 +142,22 @@ def handle(chat_id: str, text: str, has_media: bool,
             )
             send_text(chat_id,
                 f"Datos registrados:\n\n{summary}\n\n"
-                "Ahora sube tu documento PDF y le agrego la portada al inicio.")
+                "Ahora sube tu documento PDF.")
         return
 
     # ── Recibiendo PDF ────────────────────────────────────────────────────
     if step == "waiting_pdf" and has_media and "pdf" in mime_type.lower():
         send_text(chat_id, "Recibido, generando tu portada...")
 
-        media = download_media(message_id)
+        media = download_media(raw_message)
         if not media:
             send_text(chat_id, "No pude descargar el archivo. Intentalo de nuevo.")
             return
 
-        data         = session["data"]
-        cover_path   = os.path.join(TEMP_DIR, f"cover_{chat_id}.pdf")
-        orig_path    = os.path.join(TEMP_DIR, f"orig_{chat_id}.pdf")
-        final_path   = os.path.join(TEMP_DIR, f"final_{chat_id}.pdf")
+        data       = session["data"]
+        cover_path = os.path.join(TEMP_DIR, f"cover_{chat_id}.pdf")
+        orig_path  = os.path.join(TEMP_DIR, f"orig_{chat_id}.pdf")
+        final_path = os.path.join(TEMP_DIR, f"final_{chat_id}.pdf")
 
         with open(orig_path, "wb") as f:
             f.write(media)
@@ -152,7 +171,6 @@ def handle(chat_id: str, text: str, has_media: bool,
             fecha=data.get("fecha", ""),
             output_path=cover_path,
         )
-
         prepend_cover_to_pdf(cover_path, orig_path, final_path)
 
         send_file(chat_id, final_path,
@@ -178,70 +196,100 @@ def handle(chat_id: str, text: str, has_media: bool,
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json or {}
+    event = data.get("event", "")
 
-    if data.get("event") != "message":
+    if event != "messages.upsert":
         return jsonify({"ok": True})
 
-    payload = data.get("payload", {})
+    payload = data.get("data", {})
 
-    if payload.get("fromMe"):
+    # Ignorar mensajes propios
+    key = payload.get("key", {})
+    if key.get("fromMe"):
         return jsonify({"ok": True})
 
-    chat_id    = payload.get("from", "")
-    text       = payload.get("body", "") or ""
-    has_media  = payload.get("hasMedia", False)
-    mime_type  = (payload.get("mimetype")
-                  or payload.get("_data", {}).get("mimetype", ""))
-    message_id = payload.get("id", "")
+    chat_id  = key.get("remoteJid", "")
+    msg_type = payload.get("messageType", "")
+    message  = payload.get("message", {})
+
+    # Texto del mensaje
+    text = (message.get("conversation")
+            or message.get("extendedTextMessage", {}).get("text", "")
+            or "")
 
     if not chat_id:
         return jsonify({"ok": True})
 
+    print(f"[MSG] from={chat_id} type={msg_type} text={text[:30]}")
+
     try:
-        handle(chat_id, text, has_media, mime_type, message_id)
+        handle(chat_id, text, msg_type, payload)
     except Exception as e:
         print(f"[Error] {e}")
 
     return jsonify({"ok": True})
 
 
-@app.route("/health", methods=["GET"])
+# ─────────────────────────────────────────────────────────────────────────────
+# Rutas de administración
+# ─────────────────────────────────────────────────────────────────────────────
+@app.route("/health")
 def health():
     return jsonify({"status": "ok"})
 
 
-@app.route("/start-session", methods=["GET"])
+@app.route("/start-session")
 def start_session():
-    """Inicia la sesión de WhatsApp en WAHA."""
-    r = requests.post(f"{WAHA_URL}/api/sessions",
-        json={"name": SESSION},
-        headers=HEADERS, timeout=10)
-    return jsonify({"status": r.status_code, "data": r.json() if r.content else {}})
+    """Crea la instancia de WhatsApp y configura el webhook."""
+    r = requests.post(
+        f"{EVOLUTION_URL}/instance/create",
+        json={
+            "instanceName": INSTANCE,
+            "integration":  "WHATSAPP-BAILEYS",
+            "webhook":      f"{BOT_URL}/webhook",
+            "webhookByEvents": True,
+            "events": ["MESSAGES_UPSERT"],
+        },
+        headers=HEADERS, timeout=15,
+    )
+    return jsonify({"status": r.status_code, "data": r.json()})
 
 
-@app.route("/qr", methods=["GET"])
+@app.route("/qr")
 def get_qr():
-    """Devuelve el QR para escanear con WhatsApp."""
-    r = requests.get(f"{WAHA_URL}/api/{SESSION}/auth/qr",
-        headers=HEADERS, timeout=10)
-    if r.status_code == 200 and "image" in r.headers.get("Content-Type", ""):
-        from flask import Response
-        return Response(r.content, mimetype="image/png")
-    # Si devuelve JSON con base64
-    try:
-        data = r.json()
-        b64 = data.get("value", "")
-        if b64:
-            import base64
-            from flask import Response
-            img = base64.b64decode(b64.split(",")[-1])
-            return Response(img, mimetype="image/png")
-    except Exception:
-        pass
-    return jsonify({"status": r.status_code, "data": r.text})
+    """Devuelve el QR para vincular WhatsApp."""
+    r = requests.get(
+        f"{EVOLUTION_URL}/instance/connect/{INSTANCE}",
+        headers=HEADERS, timeout=15,
+    )
+    if r.status_code != 200:
+        return jsonify({"error": r.text}), r.status_code
+
+    data = r.json()
+    b64 = data.get("base64", "")
+    if b64:
+        img = base64.b64decode(b64.split(",")[-1])
+        return Response(img, mimetype="image/png")
+
+    return jsonify(data)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+def wait_for_evolution():
+    print("Esperando que Evolution API este lista...")
+    for _ in range(30):
+        try:
+            r = requests.get(f"{EVOLUTION_URL}/", timeout=3)
+            if r.status_code < 500:
+                print("Evolution API lista.")
+                return
+        except Exception:
+            pass
+        time.sleep(2)
+    print("Evolution API no respondio, continuando de todas formas...")
+
+
 if __name__ == "__main__":
+    wait_for_evolution()
     print("Bot iniciado en puerto 5000")
     app.run(host="0.0.0.0", port=5000)
