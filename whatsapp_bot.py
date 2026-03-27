@@ -207,13 +207,16 @@ def webhook():
     webhook_log.append({"event": event, "data": data.get("data", {})})
 
     # Guardar QR cuando llega por webhook
-    if event == "qrcode.updated":
+    if event in ("qrcode.updated", "connection.update"):
         payload = data.get("data", {})
-        b64 = payload.get("qrcode", {}).get("base64") or payload.get("base64", "")
-        if b64:
+        b64 = (payload.get("qrcode", {}).get("base64")
+               or payload.get("base64", "")
+               or payload.get("qr", ""))
+        if b64 and b64.startswith("data:image"):
             qr_cache["base64"] = b64
-            print(f"[QR] QR recibido y guardado en cache")
-        return jsonify({"ok": True})
+            print(f"[QR] QR recibido via {event}")
+        if event == "qrcode.updated":
+            return jsonify({"ok": True})
 
     if event != "messages.upsert":
         return jsonify({"ok": True})
@@ -319,21 +322,15 @@ def get_qr():
         img = base64.b64decode(b64.split(",")[-1])
         return Response(img, mimetype="image/png")
 
-    # Reiniciar instancia para forzar generación del QR
-    requests.put(
-        f"{EVOLUTION_URL}/instance/restart/{INSTANCE}",
-        headers=HEADERS, timeout=15,
-    )
-
-    # Esperar hasta que llegue el QR por webhook (máx 30 segundos)
-    for _ in range(15):
+    # Esperar hasta que llegue el QR por webhook (máx 40 segundos)
+    for _ in range(20):
         time.sleep(2)
         if qr_cache.get("base64"):
             b64 = qr_cache["base64"]
             img = base64.b64decode(b64.split(",")[-1])
             return Response(img, mimetype="image/png")
 
-    return jsonify({"error": "QR no llego aun, recarga la pagina en 5 segundos"})
+    return jsonify({"error": "QR no llego, abre /start-session y luego recarga esta pagina"})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
