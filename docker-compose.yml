@@ -1,14 +1,33 @@
 services:
 
+  postgres_evolution:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=evolution
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - POSTGRES_DB=evolution
+    volumes:
+      - evolution_postgres:/var/lib/postgresql/data
+    networks:
+      - dokploy-network
+
   evolution:
     image: atendai/evolution-api:latest
     restart: unless-stopped
+    depends_on:
+      - postgres_evolution
     environment:
       - SERVER_URL=http://evolution:8080
       - AUTHENTICATION_API_KEY=${EVOLUTION_API_KEY}
-      - DATABASE_ENABLED=false
-      - CACHE_REDIS_ENABLED=false
-      - CACHE_LOCAL_ENABLED=true
+      - DATABASE_ENABLED=true
+      - DATABASE_PROVIDER=postgresql
+      - DATABASE_CONNECTION_URI=postgresql://evolution:${DB_PASSWORD}@postgres_evolution:5432/evolution
+      - DATABASE_SAVE_DATA_INSTANCE=true
+      - DATABASE_SAVE_DATA_NEW_MESSAGE=false
+      - DATABASE_SAVE_MESSAGE_UPDATE=false
+      - DATABASE_SAVE_DATA_CONTACTS=false
+      - DATABASE_SAVE_DATA_CHATS=false
     volumes:
       - evolution_data:/evolution/instances
     networks:
@@ -31,4 +50,5 @@ networks:
     external: true
 
 volumes:
+  evolution_postgres:
   evolution_data:
