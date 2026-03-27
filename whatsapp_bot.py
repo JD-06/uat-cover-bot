@@ -16,9 +16,12 @@ from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 WAHA_URL = os.getenv("WAHA_URL", "http://waha:3000")
+WAHA_KEY = os.getenv("WAHA_API_KEY", "")
 SESSION  = "default"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMP_DIR = tempfile.gettempdir()
+
+HEADERS = {"X-Api-Key": WAHA_KEY} if WAHA_KEY else {}
 
 app = Flask(__name__)
 
@@ -47,7 +50,7 @@ def send_text(chat_id: str, text: str):
         "chatId":  chat_id,
         "text":    text,
         "session": SESSION,
-    }, timeout=10)
+    }, headers=HEADERS, timeout=10)
 
 
 def send_file(chat_id: str, file_path: str, caption: str = ""):
@@ -55,6 +58,7 @@ def send_file(chat_id: str, file_path: str, caption: str = ""):
         requests.post(f"{WAHA_URL}/api/sendFile",
             data={"chatId": chat_id, "session": SESSION, "caption": caption},
             files={"file": (os.path.basename(file_path), f, "application/pdf")},
+            headers=HEADERS,
             timeout=30,
         )
 
@@ -63,6 +67,7 @@ def download_media(message_id: str) -> bytes | None:
     """Descarga el archivo de un mensaje con media desde WAHA."""
     r = requests.post(
         f"{WAHA_URL}/api/{SESSION}/messages/{message_id}/download-media",
+        headers=HEADERS,
         timeout=30,
     )
     if r.status_code == 200:
